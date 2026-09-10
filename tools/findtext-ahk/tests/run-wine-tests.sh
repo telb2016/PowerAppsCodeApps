@@ -24,15 +24,42 @@ if [ -z "${DISPLAY:-}" ]; then
     export DISPLAY=:99
 fi
 
-if [ ! -f "$AHK" ]; then
-    echo "fetching AutoHotkey v2..."
+AHK_VERSION=${AHK_VERSION:-2.0.27}
+
+fetch_ahk() {
     mkdir -p "$AHK_DIR"
-    curl -sSL -o /tmp/ahk2.zip https://www.autohotkey.com/download/ahk-v2.zip
-    unzip -oq /tmp/ahk2.zip -d "$AHK_DIR"
+    # autohotkey.com sits behind Cloudflare, which serves CI runners a JS
+    # challenge page instead of the zip, so take the Chocolatey package feed
+    # first - it is a plain nupkg (a zip) with the official build nested inside.
+    echo "fetching AutoHotkey $AHK_VERSION from the Chocolatey feed..."
+    if curl -sSfL -o /tmp/ahk.nupkg \
+        "https://community.chocolatey.org/api/v2/package/autohotkey.portable/$AHK_VERSION" \
+        && unzip -tq /tmp/ahk.nupkg >/dev/null 2>&1; then
+        unzip -oq /tmp/ahk.nupkg -d /tmp/ahk-nupkg
+        inner=$(find /tmp/ahk-nupkg/tools -name '*.zip' | head -1)
+        if [ -n "$inner" ] && unzip -oq "$inner" -d "$AHK_DIR"; then
+            [ -f "$AHK" ] && { echo "  got AutoHotkey from Chocolatey"; return 0; }
+        fi
+    fi
+
+    echo "  Chocolatey feed failed; trying autohotkey.com..."
+    if curl -sSfL -o /tmp/ahk2.zip https://www.autohotkey.com/download/ahk-v2.zip \
+        && unzip -tq /tmp/ahk2.zip >/dev/null 2>&1; then
+        unzip -oq /tmp/ahk2.zip -d "$AHK_DIR"
+        [ -f "$AHK" ] && { echo "  got AutoHotkey from autohotkey.com"; return 0; }
+    fi
+
+    echo "ERROR: could not obtain AutoHotkey from any source." >&2
+    echo "       autohotkey.com is behind Cloudflare and blocks some networks." >&2
+    return 1
+}
+
+if [ ! -f "$AHK" ]; then
+    fetch_ahk || exit 2
 fi
 [ -f Lib/OCR.ahk ] || {
     echo "fetching OCR.ahk..."
-    curl -sSL -o Lib/OCR.ahk https://raw.githubusercontent.com/Descolada/OCR/main/Lib/OCR.ahk
+    curl -sSfL -o Lib/OCR.ahk https://raw.githubusercontent.com/Descolada/OCR/main/Lib/OCR.ahk || exit 2
 }
 
 wineboot -i >/dev/null 2>&1

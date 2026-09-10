@@ -41,17 +41,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # autohotkey.com is behind Cloudflare and serves runners a JS challenge
+      # page rather than the zip, so pull the official build from the
+      # Chocolatey package feed (a nupkg is a zip with the release nested in it)
       - name: install AutoHotkey v2 (portable, no admin needed)
         shell: pwsh
+        env:
+          AHK_VERSION: "2.0.27"
         run: |
-          Invoke-WebRequest https://www.autohotkey.com/download/ahk-v2.zip -OutFile ahk2.zip
-          Expand-Archive ahk2.zip -DestinationPath ahk2 -Force
-          "AHK=$PWD\ahk2\AutoHotkey64.exe" | Out-File -Append $env:GITHUB_ENV
+          $ErrorActionPreference = "Stop"
+          Invoke-WebRequest "https://community.chocolatey.org/api/v2/package/autohotkey.portable/$env:AHK_VERSION" -OutFile ahk.nupkg
+          Expand-Archive ahk.nupkg -DestinationPath nupkg -Force
+          $inner = Get-ChildItem nupkg\tools -Filter *.zip | Select-Object -First 1
+          if (-not $inner) { throw "no AutoHotkey zip inside the package" }
+          Expand-Archive $inner.FullName -DestinationPath ahk2 -Force
+          $exe = "$PWD\ahk2\AutoHotkey64.exe"
+          if (-not (Test-Path $exe)) { throw "AutoHotkey64.exe not found after extract" }
+          & $exe /ErrorStdOut /validate Tests.ahk
+          Write-Host "AutoHotkey ready: $exe"
+          "AHK=$exe" | Out-File -Append $env:GITHUB_ENV
 
       - name: fetch OCR.ahk
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path Lib | Out-Null
+          $ErrorActionPreference = "Stop"
           Invoke-WebRequest https://raw.githubusercontent.com/Descolada/OCR/main/Lib/OCR.ahk -OutFile Lib\OCR.ahk
 
       - name: syntax check on real Windows
