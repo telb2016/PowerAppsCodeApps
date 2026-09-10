@@ -50,7 +50,32 @@ run the built-in OCR over it":
 - **Imaging / DPI / misc** — `gdiplus`, `ole32`, `OleAut32`, `Dwmapi`, `D3D11`,
   `SetThreadDpiAwarenessContext`, `ntdll\memcpy`
 
-## The one thing worth understanding before you approve it
+## The MCode construct — now removed, not just explained
+
+**Status: eliminated.** `Patch-RemoveMCode.ahk` replaces the machine-code blobs
+with plain AutoHotkey, and the CI pipeline applies it automatically. After
+patching, the library contains **no `CryptStringToBinary`, no `VirtualProtect`,
+no `GlobalAlloc`, and no encoded blobs** — verified by grep in the patcher's own
+output and independently in CI.
+
+The readable replacements live in `Lib/PixelTransforms.ahk`: three functions,
+about 60 lines, that a reviewer can read in a minute.
+
+`Verify-MCodeRemoval.ahk` proves the swap is behaviour-preserving. It recovers
+the original blobs from `Lib/OCR.ahk.orig`, runs both implementations over
+identical pixel buffers, and compares every pixel. All three transforms come
+back **byte-identical**.
+
+The cost is speed: on a 1280x720 buffer the compiled version took ~18ms and the
+AutoHotkey loop ~850ms (measured under Wine; run the verifier for a figure from
+your own hardware). That applies **only** when you use the `grayscale`,
+`invertcolors` or `monochrome` options, and it scales with area — passing a
+`region` rather than scanning a whole screen keeps it negligible. If you never
+use those options the transforms are never called at all.
+
+To keep the upstream machine code instead, set `KEEP_MCODE=1`.
+
+## What the construct was, for the record
 
 The library uses the **MCode** pattern, a long-standing AutoHotkey idiom:
 base64-encoded machine code is decoded with `CryptStringToBinary`, marked
@@ -75,10 +100,9 @@ What we checked, and what we found:
   nothing else.
 - They are only invoked when the corresponding image option is used.
 
-Verdict on this construct: **benign, documented, and matches its stated
-purpose** — but flag it to IT security proactively rather than letting them
-find `VirtualProtect(PAGE_EXECUTE_READWRITE)` themselves. It reads far worse
-out of context than it is.
+Verdict: **benign, documented, and matching its stated purpose** — but it has
+been removed anyway, because a reviewer should not have to take that analysis on
+trust when a readable equivalent costs milliseconds on a typical region.
 
 ## What this review does not cover
 

@@ -176,3 +176,32 @@ testsun-wine-tests.sh run the lot on Linux
 
 The split exists so the logic can be tested without a screen. `FindTextCore.ahk`
 has no dependency on OCR or the display at all.
+
+## Removing the machine-code blobs
+
+The upstream OCR library speeds up three image transforms by base64-decoding
+machine code into executable memory. It is benign — see `SECURITY-REVIEW.md`,
+which disassembles it — but "decode a blob and execute it" is hard to get past a
+security review and impossible for a reviewer to read.
+
+```
+AutoHotkey64.exe Patch-RemoveMCode.ahk        # swap blobs for readable AHK
+AutoHotkey64.exe Verify-MCodeRemoval.ahk      # prove the swap changed nothing
+```
+
+After patching, the library contains no `CryptStringToBinary`, no
+`VirtualProtect` and no encoded blobs. The replacements live in
+`Lib/PixelTransforms.ahk` — three functions, ~60 lines, transcribed from the C
+source in the library's own comments.
+
+`Verify-MCodeRemoval.ahk` recovers the original blobs from the `.orig` backup,
+runs both versions over identical buffers and compares every pixel. All three
+come back byte-identical.
+
+**The trade-off:** the AHK loops are much slower than compiled code (~18ms vs
+~850ms for a 1280x720 buffer). This applies *only* when using `grayscale`,
+`invertcolors` or `monochrome`, and scales with area — with a `region` it is
+negligible. Never use those options and the code never runs. Set `KEEP_MCODE=1`
+to keep the upstream version.
+
+Both the local test script and CI apply and verify the patch automatically.

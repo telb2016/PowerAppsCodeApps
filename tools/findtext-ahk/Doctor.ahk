@@ -87,7 +87,18 @@ Main() {
         ? "All checks passed. This machine is good to go."
         : failures . " check(s) FAILED - see above.")
 
-    MsgBox report, "FindText Doctor", failures = 0 ? "Iconi" : "Icon!"
+    ; Write the report to a file first, so it survives however we exit
+    try FileDelete A_ScriptDir . "\\DoctorResults.txt"
+    FileAppend report, A_ScriptDir . "\\DoctorResults.txt"
+
+    ; A MsgBox blocks forever where nobody can click it - a CI runner, a
+    ; scheduled task, an unattended session. Pass /quiet there.
+    quiet := false
+    for arg in A_Args
+        if (arg = "/quiet")
+            quiet := true
+    if (!quiet)
+        MsgBox report, "FindText Doctor", failures = 0 ? "Iconi" : "Icon!"
     ExitApp failures = 0 ? 0 : 1
 }
 

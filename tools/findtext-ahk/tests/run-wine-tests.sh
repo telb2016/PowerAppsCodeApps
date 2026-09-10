@@ -57,10 +57,23 @@ fetch_ahk() {
 if [ ! -f "$AHK" ]; then
     fetch_ahk || exit 2
 fi
-[ -f Lib/OCR.ahk ] || {
+if [ ! -f Lib/OCR.ahk ]; then
     echo "fetching OCR.ahk..."
     curl -sSfL -o Lib/OCR.ahk https://raw.githubusercontent.com/Descolada/OCR/main/Lib/OCR.ahk || exit 2
-}
+fi
+
+# Replace the upstream machine-code blobs with readable AutoHotkey. Set
+# KEEP_MCODE=1 to skip and use the library as shipped.
+if [ "${KEEP_MCODE:-0}" != "1" ] && [ ! -f Lib/PixelTransforms.ahk ]; then
+    echo "removing machine-code blobs from OCR.ahk..."
+    timeout 180 wine "$AHK" /ErrorStdOut Patch-RemoveMCode.ahk "Lib\\OCR.ahk" /quiet >/dev/null 2>&1
+    if [ -f Lib/PixelTransforms.ahk ]; then
+        echo "  patched (originals kept at Lib/OCR.ahk.orig)"
+    else
+        echo "  WARNING: patch did not apply; continuing with the library as shipped" >&2
+        [ -f PatchResults.txt ] && sed 's/^/    /' PatchResults.txt >&2
+    fi
+fi
 
 wineboot -i >/dev/null 2>&1
 

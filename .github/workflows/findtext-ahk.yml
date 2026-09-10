@@ -67,8 +67,43 @@ jobs:
           $ErrorActionPreference = "Stop"
           Invoke-WebRequest https://raw.githubusercontent.com/Descolada/OCR/main/Lib/OCR.ahk -OutFile Lib\OCR.ahk
 
+      # Swap the upstream machine-code blobs for readable AutoHotkey, and prove
+      # the replacement is behaviour-preserving before anything else runs.
+      - name: remove machine-code blobs
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          function Invoke-Ahk {
+            param([string[]]$AhkArgs)
+            $err = Join-Path $env:TEMP "ahk_err.txt"
+            $proc = Start-Process -FilePath $env:AHK -ArgumentList $AhkArgs `
+                      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
+            if (Test-Path $err) { Get-Content $err | Write-Host }
+            return $proc.ExitCode
+          }
+          $rc = Invoke-Ahk @('/ErrorStdOut', 'Patch-RemoveMCode.ahk', 'Lib\OCR.ahk', '/quiet')
+          if (Test-Path PatchResults.txt) { Get-Content PatchResults.txt }
+          if ($rc -ne 0) { exit $rc }
+
+      - name: verify the replacement is byte-identical to the machine code
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          function Invoke-Ahk {
+            param([string[]]$AhkArgs)
+            $err = Join-Path $env:TEMP "ahk_err.txt"
+            $proc = Start-Process -FilePath $env:AHK -ArgumentList $AhkArgs `
+                      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
+            if (Test-Path $err) { Get-Content $err | Write-Host }
+            return $proc.ExitCode
+          }
+          $rc = Invoke-Ahk @('/ErrorStdOut', 'Verify-MCodeRemoval.ahk', '/quiet')
+          if (Test-Path VerifyResults.txt) { Get-Content VerifyResults.txt }
+          exit $rc
+
       - name: syntax check on real Windows
         shell: pwsh
+        timeout-minutes: 5
         run: |
           # AutoHotkey is a GUI-subsystem exe. PowerShell's & operator does NOT
           # wait for those to exit, so $LASTEXITCODE is meaningless - every
@@ -95,6 +130,7 @@ jobs:
 
       - name: core logic tests
         shell: pwsh
+        timeout-minutes: 5
         run: |
           # AutoHotkey is a GUI-subsystem exe. PowerShell's & operator does NOT
           # wait for those to exit, so $LASTEXITCODE is meaningless - every
@@ -118,6 +154,7 @@ jobs:
       # how you tell that apart from a real code failure.
       - name: probe the environment (never fails)
         shell: pwsh
+        timeout-minutes: 5
         continue-on-error: true
         run: |
           # AutoHotkey is a GUI-subsystem exe. PowerShell's & operator does NOT
@@ -133,13 +170,14 @@ jobs:
             return $proc.ExitCode
           }
 
-          Invoke-Ahk @('/ErrorStdOut', 'Probe.ahk') | Out-Null
+          Invoke-Ahk @('/ErrorStdOut', 'Probe.ahk', '/quiet') | Out-Null
           if (Test-Path ProbeResults.txt) { Get-Content ProbeResults.txt }
 
       # Real end-to-end: draws known text, OCRs it, checks the position, tests
       # the pointer. Needs an interactive desktop and an OCR language pack.
       - name: doctor - end-to-end on a real desktop
         shell: pwsh
+        timeout-minutes: 5
         continue-on-error: true
         run: |
           # AutoHotkey is a GUI-subsystem exe. PowerShell's & operator does NOT
@@ -155,7 +193,8 @@ jobs:
             return $proc.ExitCode
           }
 
-          $rc = Invoke-Ahk @('/ErrorStdOut', 'Doctor.ahk')
+          $rc = Invoke-Ahk @('/ErrorStdOut', 'Doctor.ahk', '/quiet')
+          if (Test-Path DoctorResults.txt) { Get-Content DoctorResults.txt }
           Write-Host "Doctor exit code: $rc"
 
       - uses: actions/upload-artifact@v4
@@ -165,4 +204,6 @@ jobs:
           path: |
             tools/findtext-ahk/TestResults.txt
             tools/findtext-ahk/ProbeResults.txt
+            tools/findtext-ahk/DoctorResults.txt
+            tools/findtext-ahk/VerifyResults.txt
           if-no-files-found: ignore
