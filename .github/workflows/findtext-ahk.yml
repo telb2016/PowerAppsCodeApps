@@ -1,0 +1,209 @@
+name: findtext-ahk
+
+on:
+  push:
+    paths: ['tools/findtext-ahk/**', '.github/workflows/findtext-ahk.yml']
+  pull_request:
+    paths: ['tools/findtext-ahk/**', '.github/workflows/findtext-ahk.yml']
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: tools/findtext-ahk
+
+jobs:
+  # Everything that does not need a real screen. Wine on Linux, so it is cheap
+  # enough to gate every push.
+  logic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install wine and a virtual display
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wine64 xvfb unzip curl
+
+      - name: syntax check + core logic tests
+        run: ./tests/run-wine-tests.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wine-test-results
+          path: tools/findtext-ahk/TestResults.txt
+          if-no-files-found: ignore
+
+  # The parts Wine cannot reach: the real Windows OCR engine, real screen
+  # capture, and the real pointer.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # autohotkey.com is behind Cloudflare and serves runners a JS challenge
+      # page rather than the zip, so pull the official build from the
+      # Chocolatey package feed (a nupkg is a zip with the release nested in it)
+      - name: install AutoHotkey v2 (portable, no admin needed)
+        shell: pwsh
+        env:
+          AHK_VERSION: "2.0.27"
+        run: |
+          $ErrorActionPreference = "Stop"
+          Invoke-WebRequest "https://community.chocolatey.org/api/v2/package/autohotkey.portable/$env:AHK_VERSION" -OutFile ahk.nupkg
+          Expand-Archive ahk.nupkg -DestinationPath nupkg -Force
+          $inner = Get-ChildItem nupkg\tools -Filter *.zip | Select-Object -First 1
+          if (-not $inner) { throw "no AutoHotkey zip inside the package" }
+          Expand-Archive $inner.FullName -DestinationPath ahk2 -Force
+          $exe = "$PWD\ahk2\AutoHotkey64.exe"
+          if (-not (Test-Path $exe)) { throw "AutoHotkey64.exe not found after extract" }
+          Write-Host "AutoHotkey ready: $exe"
+          "AHK=$exe" | Out-File -Append $env:GITHUB_ENV
+
+      - name: fetch OCR.ahk
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path Lib | Out-Null
+          $ErrorActionPreference = "Stop"
+          Invoke-WebRequest https://raw.githubusercontent.com/Descolada/OCR/main/Lib/OCR.ahk -OutFile Lib\OCR.ahk
+
+      # Swap the upstream machine-code blobs for readable AutoHotkey, and prove
+      # the replacement is behaviour-preserving before anything else runs.
+      - name: remove machine-code blobs
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          function Invoke-Ahk {
+            param([string[]]$AhkArgs)
+            $err = Join-Path $env:TEMP "ahk_err.txt"
+            $proc = Start-Process -FilePath $env:AHK -ArgumentList $AhkArgs `
+                      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
+            if (Test-Path $err) { Get-Content $err | Write-Host }
+            return $proc.ExitCode
+          }
+          $rc = Invoke-Ahk @('/ErrorStdOut', 'Patch-RemoveMCode.ahk', 'Lib\OCR.ahk', '/quiet')
+          if (Test-Path PatchResults.txt) { Get-Content PatchResults.txt }
+          if ($rc -ne 0) { exit $rc }
+
+      - name: verify the replacement is byte-identical to the machine code
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          function Invoke-Ahk {
+            param([string[]]$AhkArgs)
+            $err = Join-Path $env:TEMP "ahk_err.txt"
+            $proc = Start-Process -FilePath $env:AHK -ArgumentList $AhkArgs `
+                      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
+            if (Test-Path $err) { Get-Content $err | Write-Host }
+            return $proc.ExitCode
+          }
+          $rc = Invoke-Ahk @('/ErrorStdOut', 'Verify-MCodeRemoval.ahk', '/quiet')
+          if (Test-Path VerifyResults.txt) { Get-Content VerifyResults.txt }
+          exit $rc
+
+      - name: syntax check on real Windows
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          # AutoHotkey is a GUI-subsystem exe. PowerShell's & operator does NOT
+          # wait for those to exit, so $LASTEXITCODE is meaningless - every
+          # script appears to fail instantly. Start-Process -Wait -PassThru
+          # waits and reports the real code.
+          function Invoke-Ahk {
+            param([string[]]$AhkArgs)
+            $err = Join-Path $env:TEMP "ahk_err.txt"
+            $proc = Start-Process -FilePath $env:AHK -ArgumentList $AhkArgs `
+                      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
+            if (Test-Path $err) { Get-Content $err | Write-Host }
+            return $proc.ExitCode
+          }
+
+          $files = @('Lib\FindTextCore.ahk','FindText.ahk','Doctor.ahk','Probe.ahk','Example_Hotkeys.ahk','Tests.ahk')
+          $bad = 0
+          foreach ($f in $files) {
+            # /ErrorStdOut must precede /validate, or a parse error opens a
+            # dialog and the job hangs until it times out
+            $rc = Invoke-Ahk @('/ErrorStdOut', '/validate', $f)
+            if ($rc -ne 0) { Write-Host "FAIL $f (exit $rc)"; $bad++ } else { Write-Host "ok   $f" }
+          }
+          if ($bad -gt 0) { exit 1 }
+
+      - name: core logic tests
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          # AutoHotkey is a GUI-subsystem exe. PowerShell's & operator does NOT
+          # wait for those to exit, so $LASTEXITCODE is meaningless - every
+          # script appears to fail instantly. Start-Process -Wait -PassThru
+          # waits and reports the real code.
+          function Invoke-Ahk {
+            param([string[]]$AhkArgs)
+            $err = Join-Path $env:TEMP "ahk_err.txt"
+            $proc = Start-Process -FilePath $env:AHK -ArgumentList $AhkArgs `
+                      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
+            if (Test-Path $err) { Get-Content $err | Write-Host }
+            return $proc.ExitCode
+          }
+
+          $rc = Invoke-Ahk @('/ErrorStdOut', 'Tests.ahk')
+          if (Test-Path TestResults.txt) { Get-Content TestResults.txt }
+          exit $rc
+
+      # Reports the environment without asserting. A runner with no OCR
+      # language pack fails the doctor for environmental reasons, and this is
+      # how you tell that apart from a real code failure.
+      - name: probe the environment (never fails)
+        shell: pwsh
+        timeout-minutes: 5
+        continue-on-error: true
+        run: |
+          # AutoHotkey is a GUI-subsystem exe. PowerShell's & operator does NOT
+          # wait for those to exit, so $LASTEXITCODE is meaningless - every
+          # script appears to fail instantly. Start-Process -Wait -PassThru
+          # waits and reports the real code.
+          function Invoke-Ahk {
+            param([string[]]$AhkArgs)
+            $err = Join-Path $env:TEMP "ahk_err.txt"
+            $proc = Start-Process -FilePath $env:AHK -ArgumentList $AhkArgs `
+                      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
+            if (Test-Path $err) { Get-Content $err | Write-Host }
+            return $proc.ExitCode
+          }
+
+          Invoke-Ahk @('/ErrorStdOut', 'Probe.ahk', '/quiet') | Out-Null
+          if (Test-Path ProbeResults.txt) { Get-Content ProbeResults.txt }
+
+      # Real end-to-end: draws known text, OCRs it, checks the position, tests
+      # the pointer. Needs an interactive desktop and an OCR language pack.
+      - name: doctor - end-to-end on a real desktop
+        shell: pwsh
+        timeout-minutes: 5
+        continue-on-error: true
+        run: |
+          # AutoHotkey is a GUI-subsystem exe. PowerShell's & operator does NOT
+          # wait for those to exit, so $LASTEXITCODE is meaningless - every
+          # script appears to fail instantly. Start-Process -Wait -PassThru
+          # waits and reports the real code.
+          function Invoke-Ahk {
+            param([string[]]$AhkArgs)
+            $err = Join-Path $env:TEMP "ahk_err.txt"
+            $proc = Start-Process -FilePath $env:AHK -ArgumentList $AhkArgs `
+                      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
+            if (Test-Path $err) { Get-Content $err | Write-Host }
+            return $proc.ExitCode
+          }
+
+          $rc = Invoke-Ahk @('/ErrorStdOut', 'Doctor.ahk', '/quiet')
+          if (Test-Path DoctorResults.txt) { Get-Content DoctorResults.txt }
+          Write-Host "Doctor exit code: $rc"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-results
+          path: |
+            tools/findtext-ahk/TestResults.txt
+            tools/findtext-ahk/ProbeResults.txt
+            tools/findtext-ahk/DoctorResults.txt
+            tools/findtext-ahk/VerifyResults.txt
+          if-no-files-found: ignore
