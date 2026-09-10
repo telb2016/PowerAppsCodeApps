@@ -57,7 +57,6 @@ jobs:
           Expand-Archive $inner.FullName -DestinationPath ahk2 -Force
           $exe = "$PWD\ahk2\AutoHotkey64.exe"
           if (-not (Test-Path $exe)) { throw "AutoHotkey64.exe not found after extract" }
-          & $exe /ErrorStdOut /validate Tests.ahk
           Write-Host "AutoHotkey ready: $exe"
           "AHK=$exe" | Out-File -Append $env:GITHUB_ENV
 
@@ -71,21 +70,46 @@ jobs:
       - name: syntax check on real Windows
         shell: pwsh
         run: |
+          # AutoHotkey is a GUI-subsystem exe. PowerShell's & operator does NOT
+          # wait for those to exit, so $LASTEXITCODE is meaningless - every
+          # script appears to fail instantly. Start-Process -Wait -PassThru
+          # waits and reports the real code.
+          function Invoke-Ahk {
+            param([string[]]$AhkArgs)
+            $err = Join-Path $env:TEMP "ahk_err.txt"
+            $proc = Start-Process -FilePath $env:AHK -ArgumentList $AhkArgs `
+                      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
+            if (Test-Path $err) { Get-Content $err | Write-Host }
+            return $proc.ExitCode
+          }
+
           $files = @('Lib\FindTextCore.ahk','FindText.ahk','Doctor.ahk','Probe.ahk','Example_Hotkeys.ahk','Tests.ahk')
           $bad = 0
           foreach ($f in $files) {
             # /ErrorStdOut must precede /validate, or a parse error opens a
             # dialog and the job hangs until it times out
-            & $env:AHK /ErrorStdOut /validate $f
-            if ($LASTEXITCODE -ne 0) { Write-Host "FAIL $f"; $bad++ } else { Write-Host "ok   $f" }
+            $rc = Invoke-Ahk @('/ErrorStdOut', '/validate', $f)
+            if ($rc -ne 0) { Write-Host "FAIL $f (exit $rc)"; $bad++ } else { Write-Host "ok   $f" }
           }
           if ($bad -gt 0) { exit 1 }
 
       - name: core logic tests
         shell: pwsh
         run: |
-          & $env:AHK /ErrorStdOut Tests.ahk
-          $rc = $LASTEXITCODE
+          # AutoHotkey is a GUI-subsystem exe. PowerShell's & operator does NOT
+          # wait for those to exit, so $LASTEXITCODE is meaningless - every
+          # script appears to fail instantly. Start-Process -Wait -PassThru
+          # waits and reports the real code.
+          function Invoke-Ahk {
+            param([string[]]$AhkArgs)
+            $err = Join-Path $env:TEMP "ahk_err.txt"
+            $proc = Start-Process -FilePath $env:AHK -ArgumentList $AhkArgs `
+                      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
+            if (Test-Path $err) { Get-Content $err | Write-Host }
+            return $proc.ExitCode
+          }
+
+          $rc = Invoke-Ahk @('/ErrorStdOut', 'Tests.ahk')
           if (Test-Path TestResults.txt) { Get-Content TestResults.txt }
           exit $rc
 
@@ -96,7 +120,20 @@ jobs:
         shell: pwsh
         continue-on-error: true
         run: |
-          & $env:AHK /ErrorStdOut Probe.ahk
+          # AutoHotkey is a GUI-subsystem exe. PowerShell's & operator does NOT
+          # wait for those to exit, so $LASTEXITCODE is meaningless - every
+          # script appears to fail instantly. Start-Process -Wait -PassThru
+          # waits and reports the real code.
+          function Invoke-Ahk {
+            param([string[]]$AhkArgs)
+            $err = Join-Path $env:TEMP "ahk_err.txt"
+            $proc = Start-Process -FilePath $env:AHK -ArgumentList $AhkArgs `
+                      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
+            if (Test-Path $err) { Get-Content $err | Write-Host }
+            return $proc.ExitCode
+          }
+
+          Invoke-Ahk @('/ErrorStdOut', 'Probe.ahk') | Out-Null
           if (Test-Path ProbeResults.txt) { Get-Content ProbeResults.txt }
 
       # Real end-to-end: draws known text, OCRs it, checks the position, tests
@@ -105,8 +142,21 @@ jobs:
         shell: pwsh
         continue-on-error: true
         run: |
-          & $env:AHK /ErrorStdOut Doctor.ahk
-          Write-Host "Doctor exit code: $LASTEXITCODE"
+          # AutoHotkey is a GUI-subsystem exe. PowerShell's & operator does NOT
+          # wait for those to exit, so $LASTEXITCODE is meaningless - every
+          # script appears to fail instantly. Start-Process -Wait -PassThru
+          # waits and reports the real code.
+          function Invoke-Ahk {
+            param([string[]]$AhkArgs)
+            $err = Join-Path $env:TEMP "ahk_err.txt"
+            $proc = Start-Process -FilePath $env:AHK -ArgumentList $AhkArgs `
+                      -Wait -PassThru -NoNewWindow -RedirectStandardError $err
+            if (Test-Path $err) { Get-Content $err | Write-Host }
+            return $proc.ExitCode
+          }
+
+          $rc = Invoke-Ahk @('/ErrorStdOut', 'Doctor.ahk')
+          Write-Host "Doctor exit code: $rc"
 
       - uses: actions/upload-artifact@v4
         if: always()
