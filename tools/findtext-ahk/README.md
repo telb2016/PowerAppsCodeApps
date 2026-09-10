@@ -171,37 +171,74 @@ Lib\OCR.ahk             download separately
 Doctor.ahk              end-to-end check on a real machine
 Probe.ahk               reports the environment without asserting
 Tests.ahk               core logic tests
-testsun-wine-tests.sh run the lot on Linux
+tests
+un-wine-tests.sh run the lot on Linux
 ```
 
 The split exists so the logic can be tested without a screen. `FindTextCore.ahk`
 has no dependency on OCR or the display at all.
 
-## Removing the machine-code blobs
+## Two builds: machine code, or readable
 
-The upstream OCR library speeds up three image transforms by base64-decoding
-machine code into executable memory. It is benign — see `SECURITY-REVIEW.md`,
-which disassembles it — but "decode a blob and execute it" is hard to get past a
-security review and impossible for a reviewer to read.
+The OCR library accelerates three image transforms with embedded machine code.
+Both options are supported and produce **byte-identical results** — the only
+difference is speed and how it reads to a security reviewer.
 
 ```
-AutoHotkey64.exe Patch-RemoveMCode.ahk        # swap blobs for readable AHK
-AutoHotkey64.exe Verify-MCodeRemoval.ahk      # prove the swap changed nothing
+AutoHotkey64.exe Setup.ahk               # asks which you want
+AutoHotkey64.exe Setup.ahk /keep-mcode   # fastest, upstream untouched
+AutoHotkey64.exe Setup.ahk /readable     # no executable memory
 ```
+
+|  | keep machine code | readable AutoHotkey |
+|---|---|---|
+| transform speed | milliseconds | see the table below |
+| `CryptStringToBinary` / `VirtualProtect` in the file | yes | **no** |
+| results | identical | identical (verified byte for byte) |
+| upstream file | untouched, hash `ed348c0b…` | patched, original kept at `.orig` |
+
+**Most setups are unaffected by this choice.** The transforms only run when you
+pass `grayscale`, `invertcolors` or `monochrome`, and all three default to off.
+If you never use them, the machine code never executes and the two builds
+perform identically.
+
+If you do use them, the cost of the readable version scales with the area you
+scan:
+
+| area scanned | pixels | grayscale cost |
+|---|---|---|
+| full screen 1920x1080 | 2,073,600 | ~1680 ms |
+| window 800x600 | 480,000 | ~405 ms |
+| toolbar strip 1920x200 | 384,000 | ~292 ms |
+| dialog area 600x150 | 90,000 | ~81 ms |
+| small region 400x100 | 40,000 | ~32 ms |
+
+Measured under Wine; native Windows is typically faster. Since `region` is worth
+passing for speed and accuracy anyway, the readable build is usually fine — the
+full-screen figure is the worst case, not the normal one.
+
+**Pick machine code if** you need `invertcolors` on large areas at speed —
+scanning a whole dark-themed screen repeatedly, for instance.
+**Pick readable if** your security review would stall on executable memory, or
+you use regions (or none of those three options at all).
+
+### Verifying the readable build
+
+```
+AutoHotkey64.exe Verify-MCodeRemoval.ahk
+```
+
+It recovers the original blobs from `Lib\OCR.ahk.orig`, runs both
+implementations over identical pixel buffers, compares every pixel, and times
+both on your hardware. All three transforms come back byte-identical.
 
 After patching, the library contains no `CryptStringToBinary`, no
-`VirtualProtect` and no encoded blobs. The replacements live in
-`Lib/PixelTransforms.ahk` — three functions, ~60 lines, transcribed from the C
-source in the library's own comments.
+`VirtualProtect`, no `GlobalAlloc` and no encoded blobs. The replacements live
+in `Lib\PixelTransforms.ahk` — three functions, ~60 lines, transcribed from the
+C source in the library's own comments.
 
-`Verify-MCodeRemoval.ahk` recovers the original blobs from the `.orig` backup,
-runs both versions over identical buffers and compares every pixel. All three
-come back byte-identical.
+`SECURITY-REVIEW.md` covers the dependency in full, including a disassembly of
+the machine code showing it is exactly the documented pixel loop.
 
-**The trade-off:** the AHK loops are much slower than compiled code (~18ms vs
-~850ms for a 1280x720 buffer). This applies *only* when using `grayscale`,
-`invertcolors` or `monochrome`, and scales with area — with a `region` it is
-negligible. Never use those options and the code never runs. Set `KEEP_MCODE=1`
-to keep the upstream version.
-
-Both the local test script and CI apply and verify the patch automatically.
+For CI and the local test script, `KEEP_MCODE=1` selects the machine-code build;
+the default is readable.
