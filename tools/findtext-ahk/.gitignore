@@ -1,0 +1,5 @@
+.ahk/
+.wineprefix/
+TestResults.txt
+ProbeResults.txt
+Lib/OCR.ahk
